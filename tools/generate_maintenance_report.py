@@ -9,12 +9,13 @@ import re
 from pathlib import Path
 
 import numpy as np
-from docx import Document
 
 try:
     from pipeline_core import build_maintenance_analysis_payload
+    from report_writer import write_maintenance_report
 except ImportError:  # pragma: no cover - package import path for tests/tools
     from tools.pipeline_core import build_maintenance_analysis_payload
+    from tools.report_writer import write_maintenance_report
 
 
 def read_log_text(path: Path) -> str:
@@ -404,54 +405,8 @@ def main() -> int:
     except FileNotFoundError as exc:
         raise SystemExit(str(exc)) from exc
 
-    summary = report_payload["summary"]
-    top_causes = [(r["label"], r["count"]) for r in report_payload["top_causes"]]
-    fail_candidates = report_payload["fail_candidates"]
     focus = report_payload.get("focus")
-    iso_path = report_payload["model_paths"]["anomaly_model"]
-    cause_path = report_payload["model_paths"]["cause_model"]
-
-    doc = Document()
-    doc.add_heading("정비 통합 보고서", level=1)
-    doc.add_paragraph(f"생성시각: {report_payload['generated_at']}")
-    doc.add_paragraph(f"로그 경로: {log_root}")
-    doc.add_paragraph(f"사용 이상탐지 모델: {iso_path}")
-    doc.add_paragraph(f"사용 원인분류 모델: {cause_path}")
-
-    doc.add_heading("요약", level=2)
-    doc.add_paragraph(f"총 로그: {summary['total_logs']}건")
-    doc.add_paragraph(f"FAIL 후보: {summary['fail_candidates']}건")
-    doc.add_paragraph(f"장기 고장 HIGH 위험: {summary['high_risk_count']}건")
-
-    doc.add_heading("원인 분류 Top 5", level=2)
-    t1 = doc.add_table(rows=1, cols=2)
-    t1.rows[0].cells[0].text = "원인 라벨"
-    t1.rows[0].cells[1].text = "건수"
-    for k, v in top_causes:
-        c = t1.add_row().cells
-        c[0].text = str(k)
-        c[1].text = str(v)
-
-    doc.add_heading("FAIL 후보 및 선정 이유", level=2)
-    doc.add_paragraph(f"총 FAIL 후보: {summary['fail_candidates']}건")
-    doc.add_paragraph('이상점수는 Isolation Forest가 주는 "정상에서 얼마나 벗어났는지" 점수입니다.')
-    t3 = doc.add_table(rows=1, cols=5)
-    t3.rows[0].cells[0].text = "파일"
-    t3.rows[0].cells[1].text = "이상점수"
-    t3.rows[0].cells[2].text = "원인 라벨"
-    t3.rows[0].cells[3].text = "위험도"
-    t3.rows[0].cells[4].text = "선정 이유"
-    for r in fail_candidates:
-        c = t3.add_row().cells
-        c[0].text = str(r["file"])
-        c[1].text = f"{float(r['anomaly']):.4f}"
-        c[2].text = str(r["cause"])
-        c[3].text = str(r["risk"])
-        c[4].text = str(r["reason"])
-
-    doc.add_heading("종합의견", level=2)
     if focus:
-        doc.add_paragraph(str(focus["summary_text"]))
         update_memory_with_feedback(
             memory,
             args.operator_feedback,
@@ -461,20 +416,9 @@ def main() -> int:
             list(focus.get("test_ids", [])),
         )
         save_inspection_memory(memory_path, memory)
-        if args.operator_feedback:
-            doc.add_paragraph(f"운용자 피드백 반영: {args.operator_feedback}")
-        preference_note = str(focus.get("preference_note", ""))
-        if preference_note:
-            doc.add_paragraph(preference_note)
-    else:
-        doc.add_paragraph(
-            "focus-log가 지정되지 않았거나 로그 루트 내에서 찾지 못해, 본 보고서는 전체 집계 기반 종합의견만 제공합니다."
-        )
 
-    out_doc.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(out_doc)
-    out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_json.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_maintenance_report(report_payload, out_doc, out_json, operator_feedback=args.operator_feedback)
+
     print(str(out_doc))
     print(str(out_json))
     return 0
