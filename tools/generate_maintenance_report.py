@@ -11,6 +11,11 @@ from pathlib import Path
 import numpy as np
 from docx import Document
 
+try:
+    from recommendation_policy import apply_recommendation_policy
+except ImportError:  # pragma: no cover - package import path for tests/tools
+    from tools.recommendation_policy import apply_recommendation_policy
+
 
 def read_log_text(path: Path) -> str:
     b = path.read_bytes()
@@ -573,19 +578,12 @@ def main() -> int:
             names = [Path(r["file"]).name for r in similar_cases[:3]]
             similar_case_line = "유사 이력: " + " / ".join(names)
 
-        exclusion_items, memory_note = apply_resolved_priority(memory, focus_test_ids, exclusion_items)
-        exclusion_items, interview_priority_note = apply_interview_priority(memory, exclusion_items)
-        interview_memory_note = build_interview_memory_note(memory)
-
-        prefer_first = str(memory.get("preferences", {}).get("prefer_first_check", "")).strip()
-        if prefer_first:
-            idx = next((i for i, it in enumerate(exclusion_items) if prefer_first in it), -1)
-            if idx > 0:
-                first_item = exclusion_items.pop(idx)
-                exclusion_items.insert(0, first_item)
-            elif idx < 0:
-                exclusion_items.insert(0, prefer_first)
-        exclusion_items = exclusion_items[:3]
+        recommendation = apply_recommendation_policy(memory, focus_test_ids, exclusion_items)
+        exclusion_items = list(recommendation.get("recommended_exclusion_items", exclusion_items))[:3]
+        memory_note = str(recommendation.get("resolved_priority_note", ""))
+        interview_priority_note = str(recommendation.get("interview_priority_note", ""))
+        interview_memory_note = str(recommendation.get("interview_memory_note", ""))
+        preference_note = str(recommendation.get("preference_note", ""))
         exclusion_line = "우선점검권고: " + " / ".join(exclusion_items)
 
         summary = (
@@ -621,8 +619,8 @@ def main() -> int:
         save_inspection_memory(memory_path, memory)
         if args.operator_feedback:
             doc.add_paragraph(f"운용자 피드백 반영: {args.operator_feedback}")
-        if prefer_first:
-            doc.add_paragraph(f"지속 메모리 적용: 이전 우선점검 선호 '{prefer_first}'를 본 권고 순서에 반영했습니다.")
+        if preference_note:
+            doc.add_paragraph(preference_note)
     else:
         doc.add_paragraph(
             "focus-log가 지정되지 않았거나 로그 루트 내에서 찾지 못해, 본 보고서는 전체 집계 기반 종합의견만 제공합니다."
