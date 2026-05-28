@@ -8,6 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+try:
+    from agent_memory import append_verification_record
+except ImportError:  # pragma: no cover - package import path for tests/tools
+    from tools.agent_memory import append_verification_record
+
 
 def _run(cmd: list[str]) -> int:
     print("[RUN] " + " ".join(cmd), flush=True)
@@ -91,6 +96,9 @@ def _persist_interview_answers(report_json: Path, review_json: Path, answers: li
 
     memory_path.parent.mkdir(parents=True, exist_ok=True)
     memory_path.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    split_memory_root = memory_path.parent / "memory"
+    append_verification_record(split_memory_root, record)
 
 
 def main(argv: list[str] | None = None) -> int:
