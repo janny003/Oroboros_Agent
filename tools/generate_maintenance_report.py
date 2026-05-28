@@ -12,9 +12,9 @@ import numpy as np
 from docx import Document
 
 try:
-    from recommendation_policy import apply_recommendation_policy
+    from pipeline_core import build_maintenance_analysis_payload
 except ImportError:  # pragma: no cover - package import path for tests/tools
-    from tools.recommendation_policy import apply_recommendation_policy
+    from tools.pipeline_core import build_maintenance_analysis_payload
 
 
 def read_log_text(path: Path) -> str:
@@ -387,133 +387,41 @@ def main() -> int:
     if not log_root.exists():
         raise SystemExit(f"log root not found: {log_root}")
 
-    iso_path = pick_existing([
-        project_root / "out" / "model_factory_check_xgb" / "isolation_forest_anomaly_model.pkl",
-        project_root / "out" / "model_factory_check" / "isolation_forest_anomaly_model.pkl",
-    ])
-    cause_path = pick_existing([
-        project_root / "out" / "model_factory_check_xgb" / "xgboost_fault_cause_classifier.pkl",
-        project_root / "out" / "model_factory_check" / "xgboost_fault_cause_classifier.pkl",
-    ])
-
-    if not iso_path or not cause_path:
-        raise SystemExit("required models not found in out/model_factory_check*")
-
-    iso_obj = pickle.load(open(iso_path, "rb"))
-    cause_obj = pickle.load(open(cause_path, "rb"))
-    iso_model = iso_obj.get("model", iso_obj) if isinstance(iso_obj, dict) else iso_obj
-    cause_model = cause_obj.get("model", cause_obj) if isinstance(cause_obj, dict) else cause_obj
-    class_names = cause_obj.get("classes") if isinstance(cause_obj, dict) else None
-
-    logs = sorted(set(list(log_root.rglob("*.TXT")) + list(log_root.rglob("*.txt"))))
-    if not logs:
-        raise SystemExit("no TXT logs found")
-
-    rows = []
-    for p in logs:
-        m = extract_metrics(p)
-        f = vec_from_metrics(m)
-        x = np.array([f], dtype=float)
-        a = anomaly_score(iso_model, x)
-        is_fail = (m["failed_lines"] > 0) or ("fail" in p.name.lower())
-        cause = classify_cause(cause_model, x, class_names)
-        risk = long_term_risk(a, is_fail)
-        reason_bits = []
-        if m["failed_lines"] > 0:
-            reason_bits.append(f"본문 Failed {m['failed_lines']}회")
-        if "fail" in p.name.lower():
-            reason_bits.append("파일명에 FAIL 포함")
-        if a < 0:
-            reason_bits.append("이상탐지 점수<0")
-        if f[5] > 0:
-            reason_bits.append(f"retry 키워드 {int(f[5])}회")
-        reason = ", ".join(reason_bits) if reason_bits else "정상 패턴 우세"
-        test_ids = parse_test_ids_from_text(p.name + "\n" + read_log_text(p))
-        if not test_ids:
-            test_ids = guess_test_ids_from_filename(p.name)
-        rows.append({
-            "file": str(p),
-            "anomaly": a,
-            "cause": cause,
-            "risk": risk,
-            "is_fail": is_fail,
-            "reason": reason,
-            "features": f,
-            "test_ids": test_ids,
-        })
-
-    total = len(rows)
-    fail_n = sum(1 for r in rows if r["is_fail"])
-    high_n = sum(1 for r in rows if r["risk"] == "HIGH")
-
-    cause_counts = {}
-    for r in rows:
-        cause_counts[r["cause"]] = cause_counts.get(r["cause"], 0) + 1
-
-    filtered_causes = [(k, v) for k, v in cause_counts.items() if str(k).strip().lower() != "normal"]
-    top_causes = sorted(filtered_causes, key=lambda kv: kv[1], reverse=True)[:5]
-    if not top_causes:
-        top_causes = [("(normal 제외 후 항목 없음)", 0)]
-
-    focus_log = Path(args.focus_log) if args.focus_log else None
-    focus_row = None
-    if focus_log:
-        f_resolved = focus_log.resolve()
-        for r in rows:
-            rp = Path(r["file"])
-            if rp.resolve() == f_resolved:
-                focus_row = r
-                break
-        if focus_row is None:
-            # 경로가 일부 생략된 경우(예: 하위 폴더 누락), 파일명 기준으로 재매칭
-            for r in rows:
-                if Path(r["file"]).name.lower() == focus_log.name.lower():
-                    focus_row = r
-                    break
-
-    fault_rows = load_fault_exclusion_rows(Path(args.fault_exclusion_csv))
     memory_path = Path(args.memory_json) if args.memory_json else (project_root / "out" / "inspection_memory.json")
     memory = load_inspection_memory(memory_path)
+    generated_at = f"{dt.datetime.now():%Y-%m-%d %H:%M:%S}"
 
-    fail_rows = [r for r in rows if r["is_fail"]]
+    try:
+        report_payload = build_maintenance_analysis_payload(
+            log_root=log_root,
+            project_root=project_root,
+            focus_log=Path(args.focus_log) if args.focus_log else None,
+            fault_exclusion_csv=Path(args.fault_exclusion_csv),
+            memory=memory,
+            memory_path=memory_path,
+            generated_at=generated_at,
+        )
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    summary = report_payload["summary"]
+    top_causes = [(r["label"], r["count"]) for r in report_payload["top_causes"]]
+    fail_candidates = report_payload["fail_candidates"]
+    focus = report_payload.get("focus")
+    iso_path = report_payload["model_paths"]["anomaly_model"]
+    cause_path = report_payload["model_paths"]["cause_model"]
 
     doc = Document()
-    report_payload: dict = {
-        "generated_at": f"{dt.datetime.now():%Y-%m-%d %H:%M:%S}",
-        "log_root": str(log_root),
-        "model_paths": {
-            "anomaly_model": str(iso_path),
-            "cause_model": str(cause_path),
-        },
-        "summary": {
-            "total_logs": total,
-            "fail_candidates": fail_n,
-            "high_risk_count": high_n,
-        },
-        "top_causes": [{"label": str(k), "count": int(v)} for k, v in top_causes],
-        "fail_candidates": [
-            {
-                "file": Path(r["file"]).name,
-                "anomaly": float(r["anomaly"]),
-                "cause": str(r["cause"]),
-                "risk": str(r["risk"]),
-                "reason": str(r["reason"]),
-            }
-            for r in fail_rows[:80]
-        ],
-        "focus": None,
-        "memory_json": str(memory_path),
-    }
     doc.add_heading("정비 통합 보고서", level=1)
-    doc.add_paragraph(f"생성시각: {dt.datetime.now():%Y-%m-%d %H:%M:%S}")
+    doc.add_paragraph(f"생성시각: {report_payload['generated_at']}")
     doc.add_paragraph(f"로그 경로: {log_root}")
     doc.add_paragraph(f"사용 이상탐지 모델: {iso_path}")
     doc.add_paragraph(f"사용 원인분류 모델: {cause_path}")
 
     doc.add_heading("요약", level=2)
-    doc.add_paragraph(f"총 로그: {total}건")
-    doc.add_paragraph(f"FAIL 후보: {fail_n}건")
-    doc.add_paragraph(f"장기 고장 HIGH 위험: {high_n}건")
+    doc.add_paragraph(f"총 로그: {summary['total_logs']}건")
+    doc.add_paragraph(f"FAIL 후보: {summary['fail_candidates']}건")
+    doc.add_paragraph(f"장기 고장 HIGH 위험: {summary['high_risk_count']}건")
 
     doc.add_heading("원인 분류 Top 5", level=2)
     t1 = doc.add_table(rows=1, cols=2)
@@ -525,7 +433,7 @@ def main() -> int:
         c[1].text = str(v)
 
     doc.add_heading("FAIL 후보 및 선정 이유", level=2)
-    doc.add_paragraph(f"총 FAIL 후보: {len(fail_rows)}건")
+    doc.add_paragraph(f"총 FAIL 후보: {summary['fail_candidates']}건")
     doc.add_paragraph('이상점수는 Isolation Forest가 주는 "정상에서 얼마나 벗어났는지" 점수입니다.')
     t3 = doc.add_table(rows=1, cols=5)
     t3.rows[0].cells[0].text = "파일"
@@ -533,92 +441,29 @@ def main() -> int:
     t3.rows[0].cells[2].text = "원인 라벨"
     t3.rows[0].cells[3].text = "위험도"
     t3.rows[0].cells[4].text = "선정 이유"
-    for r in fail_rows[:80]:
+    for r in fail_candidates:
         c = t3.add_row().cells
-        c[0].text = Path(r["file"]).name
-        c[1].text = f"{r['anomaly']:.4f}"
+        c[0].text = str(r["file"])
+        c[1].text = f"{float(r['anomaly']):.4f}"
         c[2].text = str(r["cause"])
-        c[3].text = r["risk"]
-        c[4].text = r["reason"]
+        c[3].text = str(r["risk"])
+        c[4].text = str(r["reason"])
 
     doc.add_heading("종합의견", level=2)
-    if focus_row:
-        focus_path = Path(focus_row["file"])
-        focus_text = read_log_text(focus_path)
-        hist = [r for r in rows if Path(r["file"]).resolve() != focus_path.resolve()]
-        hist_anom = [float(r["anomaly"]) for r in hist] if hist else [0.0]
-        hist_fail_rate = (sum(1 for r in hist if r["is_fail"]) / len(hist)) if hist else 0.0
-
-        # short-term anomaly diagnosis
-        pctl = 50.0
-        if hist_anom:
-            pctl = float((sum(1 for v in hist_anom if v <= float(focus_row["anomaly"])) / len(hist_anom)) * 100.0)
-        short_diag = (
-            f"단기 진단 기준으로 {focus_path.name}의 이상점수는 {focus_row['anomaly']:.4f}이며, "
-            f"이전 로그 대비 약 하위 {100.0 - pctl:.1f}% 수준의 편차를 보였습니다. "
-            f"원인분류는 '{focus_row['cause']}'로 판정되었습니다."
-        )
-
-        # mid/long term forecast sentence
-        risk = focus_row["risk"]
-        if risk == "HIGH":
-            trend = "중장기 고장위험이 높아, 예방정비 주기를 즉시 단축하는 것이 필요합니다."
-        elif risk == "MEDIUM":
-            trend = "중장기 고장위험이 중간 수준으로, 추세 모니터링과 점검주기 보정이 권고됩니다."
-        else:
-            trend = "중장기 고장위험은 낮은 편이나, 동일 증상 반복 여부를 주기적으로 추적해야 합니다."
-
-        exclusion_items, exclusion_check, focus_test_ids = build_exclusion_recommendation(
-            focus_path, focus_text, fault_rows, str(focus_row["cause"])
-        )
-
-        similar_cases = collect_similar_cases(focus_row, rows, topk=5)
-        similar_case_line = ""
-        if similar_cases:
-            names = [Path(r["file"]).name for r in similar_cases[:3]]
-            similar_case_line = "유사 이력: " + " / ".join(names)
-
-        recommendation = apply_recommendation_policy(memory, focus_test_ids, exclusion_items)
-        exclusion_items = list(recommendation.get("recommended_exclusion_items", exclusion_items))[:3]
-        memory_note = str(recommendation.get("resolved_priority_note", ""))
-        interview_priority_note = str(recommendation.get("interview_priority_note", ""))
-        interview_memory_note = str(recommendation.get("interview_memory_note", ""))
-        preference_note = str(recommendation.get("preference_note", ""))
-        exclusion_line = "우선점검권고: " + " / ".join(exclusion_items)
-
-        summary = (
-            f"본 시험 로그({focus_path.name})를 이전 누적 데이터({len(hist)}건)와 비교 분석한 결과, "
-            f"이전 FAIL 비율은 {hist_fail_rate*100.0:.1f}%였습니다. {short_diag} "
-            f"중장기 예측 위험도는 {risk}로 평가되었고, {trend} {similar_case_line} "
-            f"{exclusion_line} {exclusion_check} {memory_note} {interview_priority_note} {interview_memory_note}"
-        )
-        doc.add_paragraph(summary)
-        report_payload["focus"] = {
-            "file": focus_path.name,
-            "anomaly": float(focus_row["anomaly"]),
-            "cause": str(focus_row["cause"]),
-            "risk": str(risk),
-            "short_diag": short_diag,
-            "similar_case_names": [Path(r["file"]).name for r in similar_cases[:3]],
-            "recommended_exclusion_items": exclusion_items,
-            "checklist": exclusion_check,
-            "summary_text": summary,
-            "test_ids": focus_test_ids,
-            "interview_memory_note": interview_memory_note,
-            "interview_priority_note": interview_priority_note,
-        }
-
+    if focus:
+        doc.add_paragraph(str(focus["summary_text"]))
         update_memory_with_feedback(
             memory,
             args.operator_feedback,
-            focus_path.name,
-            str(focus_row["cause"]),
-            str(risk),
-            focus_test_ids,
+            str(focus["file"]),
+            str(focus["cause"]),
+            str(focus["risk"]),
+            list(focus.get("test_ids", [])),
         )
         save_inspection_memory(memory_path, memory)
         if args.operator_feedback:
             doc.add_paragraph(f"운용자 피드백 반영: {args.operator_feedback}")
+        preference_note = str(focus.get("preference_note", ""))
         if preference_note:
             doc.add_paragraph(preference_note)
     else:
