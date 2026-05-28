@@ -49,6 +49,36 @@ def test_build_payload_preserves_report_schema_and_korean_focus_text(tmp_path):
     assert focus["interview_memory_note"]
 
 
+def test_final_confirmed_memory_is_reused_in_next_payload_priority_and_summary(tmp_path):
+    memory_path = tmp_path / "inspection_memory.json"
+    memory = {
+        "verification": {
+            "approvals": [
+                {
+                    "approval_status": "approved",
+                    "test_ids": ["GLOBAL"],
+                    "recommended_actions": ["전원제어기 경로 우선 점검", "케이블조립체(TW605/TW606) 우선 점검"],
+                }
+            ]
+        }
+    }
+
+    payload = build_maintenance_analysis_payload(
+        log_root=FIXTURE_DIR,
+        project_root=PROJECT_ROOT,
+        focus_log=FIXTURE_DIR / "sample_test_log.txt",
+        fault_exclusion_csv=FAULT_CSV,
+        memory=memory,
+        memory_path=memory_path,
+        generated_at="2026-05-28 10:00:00",
+    )
+
+    focus = payload["focus"]
+    assert focus["recommended_exclusion_items"][:2] == ["전원제어기 경로 우선 점검", "케이블조립체(TW605/TW606) 우선 점검"]
+    assert "최종확정 이력" in focus["summary_text"]
+    assert "최종확정 이력" in focus["final_confirmation_note"]
+
+
 def test_build_payload_is_pure_and_does_not_write_memory_json(tmp_path):
     memory_path = tmp_path / "inspection_memory.json"
 

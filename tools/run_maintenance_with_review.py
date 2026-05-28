@@ -225,6 +225,9 @@ def _persist_final_confirmation(report_json: Path, review_json: Path, approval_s
                 "current_report": str(report_json),
                 "review_json": str(review_json),
                 "similar_tests": payload["test_ids"],
+                "test_ids": payload["test_ids"],
+                "recommended_actions": payload["recommended_actions"],
+                "final_priority_check_order": payload["final_priority_check_order"],
             }
             hist.append(hist_record)
             if len(hist) > 200:
@@ -240,6 +243,9 @@ def _persist_final_confirmation(report_json: Path, review_json: Path, approval_s
             "report_json": str(report_json),
             "review_json": str(review_json),
             "final_diagnosis_json": str(final_json),
+            "test_ids": payload["test_ids"],
+            "recommended_actions": payload["recommended_actions"],
+            "final_priority_check_order": payload["final_priority_check_order"],
             "step7_evaluate": payload["step7_evaluate"],
         }
         append_final_approval(split_memory_root, approval_record)

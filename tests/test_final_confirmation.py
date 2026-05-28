@@ -98,10 +98,15 @@ def test_persist_final_confirmation_updates_final_json_legacy_and_split_memory(t
     assert hist["final_confirmed"] is True
     assert hist["final_diagnosis_json"] == str(final_json)
     assert hist["focus_log"] == "한글_시험로그_T06.txt"
+    assert hist["test_ids"] == ["T06"]
+    assert hist["recommended_actions"] == ["전원 경로", "케이블/커넥터"]
 
     split = load_memory_bundle(tmp_path / "out" / "memory")
-    assert split["verification"]["approvals"][-1]["approval_status"] == "approved"
-    assert split["verification"]["approvals"][-1]["final_diagnosis_json"] == str(final_json)
+    approval = split["verification"]["approvals"][-1]
+    assert approval["approval_status"] == "approved"
+    assert approval["final_diagnosis_json"] == str(final_json)
+    assert approval["test_ids"] == ["T06"]
+    assert approval["recommended_actions"] == ["전원 경로", "케이블/커넥터"]
     assert split["verification"]["audit_log"][-1]["event_type"] == "final_confirmation"
     assert split["episode"]["episodes"][-1]["event_type"] == "final_diagnosis_confirmed"
 

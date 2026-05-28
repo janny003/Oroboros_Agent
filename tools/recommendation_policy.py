@@ -29,6 +29,81 @@ def _verification_memory(memory: dict[str, Any]) -> dict[str, Any]:
     return memory
 
 
+def _iter_approved_final_records(memory: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return approved Step10/11 records from split or legacy memory, newest first."""
+    records: list[dict[str, Any]] = []
+    verification = _verification_memory(memory)
+    approvals = verification.get("approvals", []) if isinstance(verification, dict) else []
+    if isinstance(approvals, list):
+        for record in approvals:
+            if isinstance(record, dict) and str(record.get("approval_status", "")).strip() == "approved":
+                records.append(record)
+
+    legacy_history = memory.get("history", []) if isinstance(memory, dict) else []
+    if isinstance(legacy_history, list):
+        for record in legacy_history:
+            if isinstance(record, dict) and record.get("final_confirmed"):
+                records.append(record)
+
+    return list(reversed(records))
+
+
+def _record_matches_test_ids(record: dict[str, Any], test_ids: list[str]) -> bool:
+    wanted = {str(t) for t in (test_ids or []) if str(t).strip()}
+    if not wanted or "GLOBAL" in wanted:
+        return True
+    record_ids = record.get("test_ids") or record.get("similar_tests") or []
+    if isinstance(record_ids, str):
+        record_ids = [record_ids]
+    if not isinstance(record_ids, list):
+        return False
+    record_set = {str(t) for t in record_ids if str(t).strip()}
+    return bool(record_set & wanted) or "GLOBAL" in record_set
+
+
+def _action_text(action: Any) -> str:
+    if isinstance(action, dict):
+        for key in ("item", "action", "name", "check_item", "label"):
+            value = str(action.get(key, "")).strip()
+            if value:
+                return value
+        return ""
+    return str(action).strip()
+
+
+def apply_final_confirmation_priority(memory: dict[str, Any], test_ids: list[str], exclusion_items: list[str]) -> tuple[list[str], str]:
+    """Reuse approved final diagnoses as the first signal for the next diagnosis."""
+    ranked: list[str] = []
+    for record in _iter_approved_final_records(memory):
+        if not _record_matches_test_ids(record, test_ids):
+            continue
+        actions = record.get("recommended_actions") or record.get("final_priority_check_order") or []
+        if isinstance(actions, str):
+            actions = [actions]
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            text = _action_text(action)
+            if text and text not in ranked:
+                ranked.append(text)
+        if len(ranked) >= 3:
+            break
+
+    if not ranked:
+        return list(exclusion_items), ""
+
+    reordered: list[str] = []
+    used: set[str] = set()
+    for item in ranked:
+        reordered.append(item)
+        used.add(item)
+    for item in exclusion_items:
+        if item not in used:
+            reordered.append(item)
+            used.add(item)
+    return reordered[:5], f"(최종확정 이력 반영: 이전 승인 진단의 우선점검 {min(3, len(ranked))}개를 앞에 배치)"
+
+
 def build_interview_memory_note(memory: dict[str, Any]) -> str:
     verification = _verification_memory(memory)
     last = verification.get("last_interview", {}) if isinstance(verification, dict) else {}
@@ -115,11 +190,13 @@ def apply_preference_priority(memory: dict[str, Any], exclusion_items: list[str]
 
 def apply_recommendation_policy(memory: dict[str, Any], test_ids: list[str], exclusion_items: list[str]) -> dict[str, Any]:
     """Apply memory-driven ordering without mutating raw pipeline analysis data."""
-    ordered, resolved_note = apply_resolved_priority(memory, test_ids, list(exclusion_items))
+    ordered, final_note = apply_final_confirmation_priority(memory, test_ids, list(exclusion_items))
+    ordered, resolved_note = apply_resolved_priority(memory, test_ids, ordered)
     ordered, interview_note = apply_interview_priority(memory, ordered)
     ordered, preference_note = apply_preference_priority(memory, ordered)
     return {
         "recommended_exclusion_items": ordered[:3],
+        "final_confirmation_note": final_note,
         "resolved_priority_note": resolved_note,
         "interview_priority_note": interview_note,
         "preference_note": preference_note,

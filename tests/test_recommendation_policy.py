@@ -1,4 +1,5 @@
 from tools.recommendation_policy import (
+    apply_final_confirmation_priority,
     apply_interview_priority,
     apply_preference_priority,
     apply_recommendation_policy,
@@ -63,6 +64,35 @@ def test_build_interview_memory_note_supports_split_memory():
 
     assert "전원/케이블/통신 우선점검 유지=예" in note
     assert "회차별 고위험/기준 적용=아니요" in note
+
+
+def test_apply_final_confirmation_priority_reuses_approved_diagnosis_for_next_run():
+    memory = {
+        "verification": {
+            "approvals": [
+                {
+                    "approval_status": "approved",
+                    "test_ids": ["T06"],
+                    "recommended_actions": ["전원제어기 경로 우선 점검", "케이블조립체(TW605/TW606) 우선 점검"],
+                },
+                {
+                    "approval_status": "rejected",
+                    "test_ids": ["T06"],
+                    "recommended_actions": ["반려된 항목"],
+                },
+            ]
+        }
+    }
+
+    ordered, note = apply_final_confirmation_priority(memory, ["T06"], ["시스템제어기조립체 우선 점검"])
+
+    assert ordered[:3] == [
+        "전원제어기 경로 우선 점검",
+        "케이블조립체(TW605/TW606) 우선 점검",
+        "시스템제어기조립체 우선 점검",
+    ]
+    assert "최종확정 이력" in note
+    assert "반려된 항목" not in ordered
 
 
 def test_apply_recommendation_policy_keeps_raw_items_unmutated_and_returns_notes():

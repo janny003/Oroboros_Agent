@@ -414,6 +414,7 @@ def build_maintenance_analysis_payload(
 
         recommendation = apply_recommendation_policy(effective_memory, focus_test_ids, exclusion_items)
         exclusion_items = list(recommendation.get("recommended_exclusion_items", exclusion_items))[:3]
+        final_confirmation_note = str(recommendation.get("final_confirmation_note", ""))
         memory_note = str(recommendation.get("resolved_priority_note", ""))
         interview_priority_note = str(recommendation.get("interview_priority_note", ""))
         interview_memory_note = str(recommendation.get("interview_memory_note", ""))
@@ -423,7 +424,7 @@ def build_maintenance_analysis_payload(
             f"본 시험 로그({focus_path.name})를 이전 누적 데이터({len(hist)}건)와 비교 분석한 결과, "
             f"이전 FAIL 비율은 {hist_fail_rate*100.0:.1f}%였습니다. {short_diag} "
             f"중장기 예측 위험도는 {risk}로 평가되었고, {trend} {similar_case_line} "
-            f"{exclusion_line} {exclusion_check} {memory_note} {interview_priority_note} {interview_memory_note}"
+            f"{exclusion_line} {exclusion_check} {final_confirmation_note} {memory_note} {interview_priority_note} {interview_memory_note}"
         )
         payload["focus"] = {
             "file": focus_path.name,
@@ -438,6 +439,7 @@ def build_maintenance_analysis_payload(
             "test_ids": focus_test_ids,
             "interview_memory_note": interview_memory_note,
             "interview_priority_note": interview_priority_note,
+            "final_confirmation_note": final_confirmation_note,
             "preference_note": str(recommendation.get("preference_note", "")),
         }
 
