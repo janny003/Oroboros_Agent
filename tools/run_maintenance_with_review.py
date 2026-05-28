@@ -278,6 +278,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-json", default="")
     parser.add_argument("--focus-log", default="")
     parser.add_argument("--operator-feedback", default="")
+    parser.add_argument("--memory-json", default="", help="지속 점검 메모리 JSON 경로(테스트/GUI 격리 실행용)")
+    parser.add_argument("--fault-exclusion-csv", default="", help="시험 항목별 고장배제 매트릭스 CSV 경로")
     parser.add_argument("--review-history-dir", default="")
     parser.add_argument("--review-out-dir", default="")
     args = parser.parse_args(argv)
@@ -303,6 +305,10 @@ def main(argv: list[str] | None = None) -> int:
         cmd_gen += ["--focus-log", str(Path(args.focus_log))]
     if args.operator_feedback:
         cmd_gen += ["--operator-feedback", args.operator_feedback]
+    if args.memory_json:
+        cmd_gen += ["--memory-json", str(Path(args.memory_json))]
+    if args.fault_exclusion_csv:
+        cmd_gen += ["--fault-exclusion-csv", str(Path(args.fault_exclusion_csv))]
 
     rc = _run(cmd_gen)
     if rc != 0:

@@ -190,10 +190,10 @@ def apply_preference_priority(memory: dict[str, Any], exclusion_items: list[str]
 
 def apply_recommendation_policy(memory: dict[str, Any], test_ids: list[str], exclusion_items: list[str]) -> dict[str, Any]:
     """Apply memory-driven ordering without mutating raw pipeline analysis data."""
-    ordered, final_note = apply_final_confirmation_priority(memory, test_ids, list(exclusion_items))
-    ordered, resolved_note = apply_resolved_priority(memory, test_ids, ordered)
+    ordered, resolved_note = apply_resolved_priority(memory, test_ids, list(exclusion_items))
     ordered, interview_note = apply_interview_priority(memory, ordered)
     ordered, preference_note = apply_preference_priority(memory, ordered)
+    ordered, final_note = apply_final_confirmation_priority(memory, test_ids, ordered)
     return {
         "recommended_exclusion_items": ordered[:3],
         "final_confirmation_note": final_note,

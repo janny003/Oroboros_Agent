@@ -1,8 +1,9 @@
 import json
+import sys
 from pathlib import Path
 
 from tools.agent_memory import load_memory_bundle
-from tools.run_maintenance_with_review import _collect_interview_answers, _persist_interview_answers
+from tools.run_maintenance_with_review import _collect_interview_answers, _persist_interview_answers, main
 
 
 def test_collect_interview_answers_prints_four_separate_yes_no_prompts(monkeypatch, capsys):
@@ -72,3 +73,61 @@ def test_persist_interview_answers_updates_legacy_and_split_verification_memory(
     assert split["verification"]["last_interview"]["answers"] == ["예", "아니요", "예", "예"]
     assert split["verification"]["last_interview"]["questions"][0].startswith("1순위")
     assert split["verification"]["interview_history"][-1]["focus_log"] == "sample_test_log.txt"
+
+
+def test_wrapper_e2e_approved_final_confirmation_is_used_by_next_diagnosis(tmp_path, monkeypatch):
+    project_root = Path(__file__).parents[1]
+    fixture_dir = Path(__file__).parent / "fixtures"
+    fault_csv = project_root / "data" / "fault_exclusion_master_map.csv"
+    memory_json = tmp_path / "out" / "inspection_memory.json"
+    history_dir = tmp_path / "history"
+    history_dir.mkdir(parents=True)
+
+    answers = iter([
+        "yes", "yes", "yes", "yes", "approved",
+        "no", "no", "no", "no", "rejected",
+    ])
+    monkeypatch.setattr("builtins.input", lambda: next(answers))
+
+    first_doc = tmp_path / "first.docx"
+    first_json = tmp_path / "first.json"
+    first_review = tmp_path / "review1"
+    assert main([
+        "--python", sys.executable,
+        "--project-root", str(project_root),
+        "--log-root", str(fixture_dir),
+        "--out-doc", str(first_doc),
+        "--out-json", str(first_json),
+        "--focus-log", str(fixture_dir / "sample_test_log.txt"),
+        "--memory-json", str(memory_json),
+        "--fault-exclusion-csv", str(fault_csv),
+        "--review-history-dir", str(history_dir),
+        "--review-out-dir", str(first_review),
+    ]) == 0
+
+    legacy = json.loads(memory_json.read_text(encoding="utf-8"))
+    approved_actions = legacy["history"][-1]["recommended_actions"][:3]
+    assert legacy["history"][-1]["final_confirmed"] is True
+    assert approved_actions
+
+    second_doc = tmp_path / "second.docx"
+    second_json = tmp_path / "second.json"
+    second_review = tmp_path / "review2"
+    assert main([
+        "--python", sys.executable,
+        "--project-root", str(project_root),
+        "--log-root", str(fixture_dir),
+        "--out-doc", str(second_doc),
+        "--out-json", str(second_json),
+        "--focus-log", str(fixture_dir / "sample_test_log.txt"),
+        "--memory-json", str(memory_json),
+        "--fault-exclusion-csv", str(fault_csv),
+        "--review-history-dir", str(history_dir),
+        "--review-out-dir", str(second_review),
+    ]) == 0
+
+    second_payload = json.loads(second_json.read_text(encoding="utf-8"))
+    focus = second_payload["focus"]
+    assert "최종확정 이력" in focus["final_confirmation_note"]
+    assert "최종확정 이력" in focus["summary_text"]
+    assert focus["recommended_exclusion_items"][: len(approved_actions)] == approved_actions
