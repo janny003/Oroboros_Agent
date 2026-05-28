@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from agent_memory import append_verification_record
+    from agent_memory import append_final_approval, append_episode, append_verification_record
 except ImportError:  # pragma: no cover - package import path for tests/tools
-    from tools.agent_memory import append_verification_record
+    from tools.agent_memory import append_final_approval, append_episode, append_verification_record
 
 
 def _run(cmd: list[str]) -> int:
@@ -29,6 +29,32 @@ def _normalize_yes_no(raw: str) -> str:
     if v in no_set:
         return "아니요"
     return "아니요"
+
+
+def _normalize_final_confirmation(raw: str) -> str:
+    v = (raw or "").strip().lower()
+    approved = {"y", "yes", "1", "예", "ㅇ", "응", "네", "approve", "approved", "승인", "확정"}
+    pending = {"hold", "pending", "보류", "대기", "검토"}
+    rejected = {"n", "no", "0", "아니요", "아니오", "ㄴ", "reject", "rejected", "반려", "거절"}
+    if v in approved:
+        return "approved"
+    if v in pending:
+        return "pending"
+    if v in rejected:
+        return "rejected"
+    return "rejected"
+
+
+def _collect_final_confirmation() -> str:
+    question = "최종 진단을 확정하고 정비 이력에 저장하시겠습니까? (approved/pending/rejected 또는 Yes/No)"
+    print(f"[FINAL_CONFIRM_Q] {question}", flush=True)
+    try:
+        user_input = input()
+    except EOFError:
+        user_input = "rejected"
+    status = _normalize_final_confirmation(user_input)
+    print(f"[FINAL_CONFIRM_A] {status}", flush=True)
+    return status
 
 
 def _collect_interview_answers(step7: dict[str, Any]) -> list[str]:
@@ -101,6 +127,142 @@ def _persist_interview_answers(report_json: Path, review_json: Path, answers: li
     append_verification_record(split_memory_root, record)
 
 
+def _priority_check_order(step9: dict[str, Any]) -> list[dict[str, Any]]:
+    feedback = step9.get("feedback", []) if isinstance(step9, dict) else []
+    if not isinstance(feedback, list):
+        return []
+    for item in feedback:
+        if isinstance(item, dict) and item.get("type") == "priority_reorder":
+            order = item.get("top3_check_order", [])
+            return order if isinstance(order, list) else []
+    return []
+
+
+def _risk_trend_note(step9: dict[str, Any]) -> str:
+    feedback = step9.get("feedback", []) if isinstance(step9, dict) else []
+    if not isinstance(feedback, list):
+        return ""
+    for item in feedback:
+        if isinstance(item, dict) and item.get("type") == "risk_trend":
+            return str(item.get("message", ""))
+    return ""
+
+
+def _build_final_diagnosis_payload(
+    report_json: Path,
+    review_json: Path,
+    report_data: dict[str, Any],
+    review_data: dict[str, Any],
+    approval_status: str,
+) -> dict[str, Any]:
+    focus = report_data.get("focus") if isinstance(report_data.get("focus"), dict) else {}
+    step7 = review_data.get("step7", {}) if isinstance(review_data.get("step7"), dict) else {}
+    step8 = review_data.get("step8", {}) if isinstance(review_data.get("step8"), dict) else {}
+    step9 = review_data.get("step9", {}) if isinstance(review_data.get("step9"), dict) else {}
+    approved = approval_status == "approved"
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "status": "final_confirmed" if approved else "not_confirmed",
+        "approval_status": approval_status,
+        "final_confirmed": approved,
+        "approved_by": "operator" if approved else "",
+        "report_json": str(report_json),
+        "review_json": str(review_json),
+        "summary": report_data.get("summary", {}),
+        "focus_log": str(focus.get("file", "")),
+        "cause": str(focus.get("cause", "")),
+        "risk": str(focus.get("risk", "")),
+        "test_ids": focus.get("test_ids", []),
+        "recommended_actions": focus.get("recommended_exclusion_items", []),
+        "step7_questions": step7.get("interview_questions", [])[:4] if isinstance(step7.get("interview_questions", []), list) else [],
+        "step7_answers": step7.get("interview_answers", [])[:4] if isinstance(step7.get("interview_answers", []), list) else [],
+        "step7_evaluate": step7.get("evaluate", {}),
+        "step8_compare": step8,
+        "step9_feedback": step9.get("feedback", []),
+        "final_priority_check_order": _priority_check_order(step9),
+        "risk_trend_note": _risk_trend_note(step9),
+    }
+
+
+def _persist_final_confirmation(report_json: Path, review_json: Path, approval_status: str) -> Path | None:
+    try:
+        report_data = json.loads(report_json.read_text(encoding="utf-8"))
+        review_data = json.loads(review_json.read_text(encoding="utf-8")) if review_json.exists() else {}
+    except Exception:
+        return None
+
+    memory_path_raw = str(report_data.get("memory_json") or "").strip()
+    if not memory_path_raw:
+        return None
+    memory_path = Path(memory_path_raw)
+    try:
+        memory = json.loads(memory_path.read_text(encoding="utf-8")) if memory_path.exists() else {}
+    except Exception:
+        memory = {}
+
+    payload = _build_final_diagnosis_payload(report_json, review_json, report_data, review_data, approval_status)
+    final_json: Path | None = None
+    split_memory_root = memory_path.parent / "memory"
+
+    if approval_status == "approved":
+        final_dir = memory_path.parent / "final_diagnosis"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        final_json = final_dir / f"final_diagnosis_{report_json.stem}_{stamp}.json"
+        final_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        hist = memory.setdefault("history", [])
+        if isinstance(hist, list):
+            hist_record = {
+                "ts": payload["generated_at"],
+                "focus_log": payload["focus_log"],
+                "cause": payload["cause"],
+                "risk": payload["risk"],
+                "feedback": "최종진단 확정",
+                "final_confirmed": True,
+                "approval_status": approval_status,
+                "final_diagnosis_json": str(final_json),
+                "current_report": str(report_json),
+                "review_json": str(review_json),
+                "similar_tests": payload["test_ids"],
+            }
+            hist.append(hist_record)
+            if len(hist) > 200:
+                del hist[:-200]
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        memory_path.write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        approval_record = {
+            "ts": payload["generated_at"],
+            "approval_status": approval_status,
+            "approved_by": "operator",
+            "basis": "최종진단 확정",
+            "report_json": str(report_json),
+            "review_json": str(review_json),
+            "final_diagnosis_json": str(final_json),
+            "step7_evaluate": payload["step7_evaluate"],
+        }
+        append_final_approval(split_memory_root, approval_record)
+        append_episode(split_memory_root, {"event_type": "final_diagnosis_confirmed", **hist_record})
+    else:
+        append_final_approval(
+            split_memory_root,
+            {
+                "ts": payload["generated_at"],
+                "approval_status": approval_status,
+                "approved_by": "operator",
+                "basis": "최종진단 미확정",
+                "report_json": str(report_json),
+                "review_json": str(review_json),
+            },
+        )
+
+    review_data["step10"] = {"approval_status": approval_status, "final_confirmed": approval_status == "approved"}
+    review_data["step11"] = {"final_diagnosis_json": str(final_json) if final_json else ""}
+    review_json.write_text(json.dumps(review_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return final_json
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="정비 보고서 생성 + Ouroboros Step7~9 검토 연동 실행기")
     parser.add_argument("--python", default=sys.executable)
@@ -169,6 +331,9 @@ def main(argv: list[str] | None = None) -> int:
                 review_data.setdefault("step7", {})["interview_answers"] = answers
                 review_json.write_text(json.dumps(review_data, ensure_ascii=False, indent=2), encoding="utf-8")
                 _persist_interview_answers(out_json, review_json, answers)
+                approval_status = _collect_final_confirmation()
+                final_json = _persist_final_confirmation(out_json, review_json, approval_status)
+                print(f"[FINAL_CONFIRM] status={approval_status} final_diagnosis_json={final_json or ''}", flush=True)
         except Exception as ex:
             print(f"[REVIEW] summary parse skipped: {ex}", flush=True)
 

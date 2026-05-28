@@ -161,3 +161,38 @@ def append_verification_record(memory_root: Path | str, record: dict[str, Any], 
     if len(history) > limit:
         del history[:-limit]
     save_memory_bundle(memory_root, bundle)
+
+
+def append_final_approval(memory_root: Path | str, record: dict[str, Any], *, limit: int = 200) -> None:
+    """Append a Step10/11 final-confirmation audit record.
+
+    Approved records are kept in verification.approvals. All statuses are kept in
+    verification.audit_log so rejected/pending confirmations remain auditable
+    without being treated as approved maintenance history.
+    """
+    bundle = load_memory_bundle(memory_root)
+    verification = bundle.setdefault("verification", {})
+    status = str(record.get("approval_status", "")).strip() or "rejected"
+    audit_record = {"event_type": "final_confirmation", **record, "approval_status": status}
+
+    audit_log = verification.setdefault("audit_log", [])
+    if not isinstance(audit_log, list):
+        audit_log = []
+        verification["audit_log"] = audit_log
+    audit_log.append(audit_record)
+    if len(audit_log) > limit:
+        del audit_log[:-limit]
+
+    if status == "approved":
+        approvals = verification.setdefault("approvals", [])
+        if not isinstance(approvals, list):
+            approvals = []
+            verification["approvals"] = approvals
+        approval_record = dict(record)
+        approval_record["approval_status"] = status
+        approvals.append(approval_record)
+        if len(approvals) > limit:
+            del approvals[:-limit]
+        verification["last_approval"] = approval_record
+
+    save_memory_bundle(memory_root, bundle)

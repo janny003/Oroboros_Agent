@@ -3,6 +3,7 @@ import json
 from tools.agent_memory import (
     MemoryPaths,
     append_episode,
+    append_final_approval,
     append_verification_record,
     load_memory_bundle,
     migrate_legacy_inspection_memory,
@@ -83,3 +84,23 @@ def test_append_episode_and_verification_record_preserve_korean(tmp_path):
     bundle = load_memory_bundle(memory_root)
     assert bundle["episode"]["episodes"][0]["result"] == "케이블 재체결 후 정상"
     assert bundle["verification"]["last_interview"]["answers"] == ["예"]
+
+
+def test_append_final_approval_records_approval_and_audit_log(tmp_path):
+    memory_root = tmp_path / "memory"
+    record = {
+        "approval_status": "approved",
+        "approved_by": "operator",
+        "basis": "최종진단 확정: 전원 경로 우선 점검",
+        "final_diagnosis_json": "out/final_diagnosis/final.json",
+    }
+
+    append_final_approval(memory_root, record)
+
+    bundle = load_memory_bundle(memory_root)
+    approval = bundle["verification"]["approvals"][-1]
+    audit = bundle["verification"]["audit_log"][-1]
+    assert approval["approval_status"] == "approved"
+    assert approval["basis"] == "최종진단 확정: 전원 경로 우선 점검"
+    assert audit["event_type"] == "final_confirmation"
+    assert audit["approval_status"] == "approved"
