@@ -385,34 +385,42 @@ void COrobrosTestDlg::MaybeShowQuestionDialog(const CString& chunk)
         scanPos = (lineEnd >= 0) ? (lineEnd + 1) : (qNumPos + 1);
     }
 
-    if (m_interviewQuestionCount >= 4 && !m_finalInputPromptShown) {
+    int finalMarker = trimmed.Find(L"[FINAL_CONFIRM_Q]");
+    if (finalMarker >= 0 && !m_finalInputPromptShown) {
         m_finalInputPromptShown = true;
-        int askInput = MessageBox(
-            L"인터뷰 4개 질문이 끝났습니다.\r\n\r\n"
-            L"이제 직접 입력 답변을 전송할까요?\r\n"
-            L"- 예: 아래 답변 입력칸의 텍스트를 즉시 전송\r\n"
-            L"- 아니요: 전송하지 않음",
-            L"직접 입력 전송",
-            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1);
 
-        if (askInput == IDYES) {
-            CString manual;
-            m_answerEdit.GetWindowText(manual);
-            manual.Trim();
-            if (manual.IsEmpty()) {
-                MessageBox(L"답변 입력칸이 비어 있습니다. 텍스트 입력 후 Send 버튼을 눌러주세요.", L"입력 필요", MB_ICONINFORMATION);
+        int lineEnd = trimmed.Find(L"\n", finalMarker);
+        CString finalQuestion = (lineEnd >= 0) ? trimmed.Mid(finalMarker, lineEnd - finalMarker) : trimmed.Mid(finalMarker);
+        finalQuestion.Trim();
+        CString prompt = finalQuestion;
+        prompt += L"\r\n\r\n[최종 진단 확정]\r\n"
+                  L"예: approved(확정 저장)\r\n"
+                  L"아니요: rejected(반려, 확정 이력 미저장)\r\n"
+                  L"취소: pending(보류, 감사 로그만 저장)";
+
+        int selected = MessageBox(prompt, L"최종 진단 확정", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON1);
+        CString answer;
+        if (selected == IDYES) {
+            answer = L"approved";
+        }
+        else if (selected == IDNO) {
+            answer = L"rejected";
+        }
+        else {
+            answer = L"pending";
+        }
+
+        AppendText(L"\r\n[DIALOG FINAL_CONFIRM] " + answer + L"\r\n");
+        DWORD writeErr = ERROR_SUCCESS;
+        if (!WriteAnswer(answer, &writeErr)) {
+            if (writeErr == ERROR_BROKEN_PIPE || writeErr == ERROR_INVALID_HANDLE) {
+                AppendText(L"[INFO] 최종확정 응답 자동전송 생략: child stdin closed\r\n");
             }
             else {
-                AppendText(L"\r\n[MANUAL ANSWER] " + manual + L"\r\n");
-                DWORD writeErr = ERROR_SUCCESS;
-                if (!WriteAnswer(manual, &writeErr)) {
-                    CString detail = FormatWin32Error(writeErr);
-                    AppendText(L"[WARN] 직접 입력 답변 자동전송 실패: " + detail + L"\r\n");
-                    if (writeErr != ERROR_BROKEN_PIPE) {
-                        MessageBox(L"직접 입력 답변 전송에 실패했습니다. Send 버튼으로 수동 전송해주세요.\r\n" + detail,
-                            L"전송 실패", MB_ICONWARNING);
-                    }
-                }
+                CString detail = FormatWin32Error(writeErr);
+                AppendText(L"[WARN] 최종확정 응답 자동전송 실패: " + detail + L"\r\n");
+                MessageBox(L"최종확정 응답 전송에 실패했습니다. Send 버튼으로 수동 전송해주세요.\r\n" + detail,
+                    L"전송 실패", MB_ICONWARNING);
             }
         }
     }
