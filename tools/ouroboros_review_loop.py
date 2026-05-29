@@ -108,10 +108,22 @@ def _main_equipment_parts(exclusions: list[str]) -> list[str]:
 
 def build_interview(current: dict[str, Any]) -> list[str]:
     focus = current.get("focus") if isinstance(current.get("focus"), dict) else {}
-    fail_candidates = _safe_list(current.get("fail_candidates"))
-    target = str(focus.get("file") or (fail_candidates[0].get("file") if fail_candidates and isinstance(fail_candidates[0], dict) else "불량 후보"))
-    risk = str(focus.get("risk") or (fail_candidates[0].get("risk") if fail_candidates and isinstance(fail_candidates[0], dict) else "UNKNOWN"))
-    cause = str(focus.get("cause") or (fail_candidates[0].get("cause") if fail_candidates and isinstance(fail_candidates[0], dict) else "unknown"))
+    raw_fail_candidates = [c for c in _safe_list(current.get("fail_candidates")) if isinstance(c, dict)]
+    if raw_fail_candidates:
+        fail_candidates = sorted(
+            raw_fail_candidates,
+            key=lambda x: _risk_to_float(x.get("risk", 0.0)),
+            reverse=True,
+        )[:3]
+    else:
+        fail_candidates = [
+            {
+                "file": focus.get("file", "불량 후보"),
+                "risk": focus.get("risk", "UNKNOWN"),
+                "cause": focus.get("cause", "unknown"),
+            }
+        ]
+
     test_ids = ", ".join(str(x) for x in _safe_list(focus.get("test_ids"))) or "GLOBAL"
     exclusions = [str(x) for x in _safe_list(focus.get("recommended_exclusion_items"))]
     if not exclusions:
@@ -122,26 +134,23 @@ def build_interview(current: dict[str, Any]) -> list[str]:
     equipment_parts = _main_equipment_parts(exclusions)
     main_equipment_line = " / ".join(equipment_parts)
 
-    # GUI에서 Yes/No 다이얼로그 4회로 받기 위해, 항상 4개의 폐쇄형 질문을 생성한다.
-    # 질문은 고장배제 목록의 실제 확인 여부와, 소스/설정 근거상 주장비 측 확인 필요 부위를 묻는다.
-    q1 = (
-        f"불량/고장 의심 항목 '{_shorten(target)}'(시험ID {test_ids}, 위험도 {risk})의 "
-        f"고장배제 1순위 '{_shorten(exclusions[0])}'를 실제로 확인했습니까? (Yes/No)"
-    )
-    q2 = (
-        f"고장배제 목록 '{_shorten(' / '.join(exclusions[:3]), 120)}' 중 케이블/전원/연동 경로를 "
-        "누락 없이 확인했습니까? (Yes/No)"
-    )
-    q3 = (
-        f"소스/설정 근거({source_basis})상 주장비 측 확인 필요 부위로 보이는 "
-        f"'{_shorten(main_equipment_line, 100)}'를 주장비에서 확인했습니까? (Yes/No)"
-    )
-    q4 = (
-        f"원인분류 '{cause}'와 현장 확인 결과가 맞지 않을 경우, 주장비 측 추가 확인 부위와 "
-        "동일 조건 재시험 필요성을 정비 이력에 남기겠습니까? (Yes/No)"
-    )
+    questions: list[str] = []
+    for idx, candidate in enumerate(fail_candidates, 1):
+        target = str(candidate.get("file") or f"불량 후보 {idx}")
+        risk = str(candidate.get("risk") or "UNKNOWN")
+        cause = str(candidate.get("cause") or "unknown")
+        first_exclusion = exclusions[min(idx - 1, len(exclusions) - 1)]
+        q_check = (
+            f"Top{idx} 불량/고장 후보 '{_shorten(target)}'(시험ID {test_ids}, 위험도 {risk}, 원인분류 {cause})의 "
+            f"고장배제 우선 항목 '{_shorten(first_exclusion)}'를 실제로 확인했습니까? (Yes/No)"
+        )
+        q_main_equipment = (
+            f"Top{idx} 후보 '{_shorten(target)}'에 대해 소스/설정 근거({source_basis})상 주장비 측 확인 필요 부위로 보이는 "
+            f"'{_shorten(main_equipment_line, 100)}'와 동일 조건 재시험 필요성을 정비 이력에 남기겠습니까? (Yes/No)"
+        )
+        questions.extend([q_check, q_main_equipment])
 
-    return [q1, q2, q3, q4]
+    return questions
 
 
 def build_qa(current: dict[str, Any]) -> list[dict[str, str]]:

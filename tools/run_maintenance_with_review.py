@@ -13,6 +13,17 @@ try:
 except ImportError:  # pragma: no cover - package import path for tests/tools
     from tools.agent_memory import append_final_approval, append_episode, append_verification_record
 
+AGENT_CONTEXT_FIELD_INTERVIEW = "Context & Field Interview Agent"
+AGENT_PERSISTENT_MEMORY_RETRIEVAL = "Persistent Memory Retrieval Agent"
+AGENT_DIAGNOSTIC_REASONING = "Diagnostic Reasoning Agent"
+AGENT_PROCEDURE_PRIORITY = "Procedure & Priority Agent"
+AGENT_TRUST_GATE = "Trust Gate Agent"
+AGENT_FEEDBACK_LEARNING = "Feedback Learning Agent"
+
+
+def _agent(name: str, detail: str) -> None:
+    print(f"[AGENT] {name} | {detail}", flush=True)
+
 
 def _run(cmd: list[str]) -> int:
     print("[RUN] " + " ".join(cmd), flush=True)
@@ -46,6 +57,7 @@ def _normalize_final_confirmation(raw: str) -> str:
 
 
 def _collect_final_confirmation() -> str:
+    _agent(AGENT_TRUST_GATE, "최종 진단 확정 여부를 확인합니다.")
     question = "최종 진단을 확정하고 정비 이력에 저장하시겠습니까? (approved/pending/rejected 또는 Yes/No)"
     print(f"[FINAL_CONFIRM_Q] {question}", flush=True)
     try:
@@ -58,12 +70,13 @@ def _collect_final_confirmation() -> str:
 
 
 def _collect_interview_answers(step7: dict[str, Any]) -> list[str]:
+    _agent(AGENT_CONTEXT_FIELD_INTERVIEW, "현장 확인 질문을 표시하고 예/아니요 응답을 수집합니다.")
     questions = step7.get("interview_questions", []) if isinstance(step7, dict) else []
     if not isinstance(questions, list):
         return []
 
     answers: list[str] = []
-    for i, q in enumerate(questions[:4], 1):
+    for i, q in enumerate(questions, 1):
         print(f"[INTERVIEW_Q{i}] {q}", flush=True)
         try:
             user_input = input()
@@ -78,6 +91,7 @@ def _collect_interview_answers(step7: dict[str, Any]) -> list[str]:
 
 def _persist_interview_answers(report_json: Path, review_json: Path, answers: list[str]) -> None:
     """Persist Step7 Yes/No answers so the next diagnosis can use them."""
+    _agent(AGENT_FEEDBACK_LEARNING, "현장 인터뷰 응답을 다음 진단 학습 이력에 저장합니다.")
     if not answers:
         return
 
@@ -109,8 +123,8 @@ def _persist_interview_answers(report_json: Path, review_json: Path, answers: li
         "current_report": str(report_json),
         "focus_log": str(focus.get("file", "")),
         "test_ids": focus.get("test_ids", []),
-        "questions": questions[:4],
-        "answers": answers[:4],
+        "questions": questions,
+        "answers": answers,
     }
 
     memory["last_interview"] = record
@@ -174,8 +188,8 @@ def _build_final_diagnosis_payload(
         "risk": str(focus.get("risk", "")),
         "test_ids": focus.get("test_ids", []),
         "recommended_actions": focus.get("recommended_exclusion_items", []),
-        "step7_questions": step7.get("interview_questions", [])[:4] if isinstance(step7.get("interview_questions", []), list) else [],
-        "step7_answers": step7.get("interview_answers", [])[:4] if isinstance(step7.get("interview_answers", []), list) else [],
+        "step7_questions": step7.get("interview_questions", []) if isinstance(step7.get("interview_questions", []), list) else [],
+        "step7_answers": step7.get("interview_answers", []) if isinstance(step7.get("interview_answers", []), list) else [],
         "step7_evaluate": step7.get("evaluate", {}),
         "step8_compare": step8,
         "step9_feedback": step9.get("feedback", []),
@@ -185,6 +199,7 @@ def _build_final_diagnosis_payload(
 
 
 def _persist_final_confirmation(report_json: Path, review_json: Path, approval_status: str) -> Path | None:
+    _agent(AGENT_FEEDBACK_LEARNING, "최종 확정/반려 결과를 지속 메모리에 반영합니다.")
     try:
         report_data = json.loads(report_json.read_text(encoding="utf-8"))
         review_data = json.loads(review_json.read_text(encoding="utf-8")) if review_json.exists() else {}
@@ -310,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.fault_exclusion_csv:
         cmd_gen += ["--fault-exclusion-csv", str(Path(args.fault_exclusion_csv))]
 
+    _agent(AGENT_PERSISTENT_MEMORY_RETRIEVAL, "누적 점검 메모리와 과거 보고서 기준을 불러옵니다.")
+    _agent(AGENT_DIAGNOSTIC_REASONING, "로그 이상탐지, 원인분류, 위험도 분석 보고서를 생성합니다.")
     rc = _run(cmd_gen)
     if rc != 0:
         return rc
@@ -321,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         "--history-dir", str(review_history_dir),
         "--out-dir", str(review_out_dir),
     ]
+    _agent(AGENT_PROCEDURE_PRIORITY, "고장배제 절차와 우선점검 순서를 산정합니다.")
     rc = _run(cmd_review)
     if rc != 0:
         return rc
@@ -332,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
             step7 = review_data.get("step7", {})
             evaluate = step7.get("evaluate", {})
             qa_checks = step7.get("qa_checks", [])
+            _agent(AGENT_TRUST_GATE, "검토 점수와 QA 체크 결과로 신뢰 기준을 평가합니다.")
             print(
                 f"[REVIEW] score={evaluate.get('score', 'n/a')} verdict={evaluate.get('verdict', 'n/a')} qa_checks={len(qa_checks)}",
                 flush=True,

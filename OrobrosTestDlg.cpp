@@ -22,6 +22,17 @@ END_MESSAGE_MAP()
 
 COrobrosTestDlg::COrobrosTestDlg(CWnd* pParent) : CDialogEx(IDD_OROBROSTEST_DIALOG, pParent) {}
 
+
+CString COrobrosTestDlg::DefaultAgentName()
+{
+    return L"Diagnostic Reasoning Agent";
+}
+
+CString COrobrosTestDlg::DefaultMaintenanceCommand()
+{
+    return L"\"C:\\Users\\yjs\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe\" \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\tools\\run_maintenance_with_review.py\" --python \"C:\\Users\\yjs\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe\" --project-root \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\" --log-root \"C:\\Users\\yjs\\Desktop\\JAN\\LOG\" --out-doc \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\\JAN_maintenance_report_ui.docx\" --out-json \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\\JAN_maintenance_report_ui.json\" --review-history-dir \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\" --review-out-dir \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\\ouroboros_review_ui\"";
+}
+
 void COrobrosTestDlg::DoDataExchange(CDataExchange* pDX)
 {
     CDialogEx::DoDataExchange(pDX);
@@ -32,17 +43,23 @@ void COrobrosTestDlg::DoDataExchange(CDataExchange* pDX)
     DDX_Control(pDX, IDC_BUTTON_START, m_startButton);
     DDX_Control(pDX, IDC_BUTTON_SEND, m_sendButton);
     DDX_Control(pDX, IDC_BUTTON_STOP, m_stopButton);
+    DDX_Control(pDX, IDC_STATIC_AGENT_STATUS_LABEL, m_agentStatusLabel);
+    DDX_Control(pDX, IDC_STATIC_AGENT_STATUS, m_agentStatusText);
+    DDX_Control(pDX, IDC_LIST_AGENT_PROGRESS, m_agentProgressList);
 }
 
 BOOL COrobrosTestDlg::OnInitDialog()
 {
     CDialogEx::OnInitDialog();
     SetWindowText(L"OrobrosTest - Maintenance Report Runner");
-    m_commandEdit.SetWindowText(L"\"C:\\Users\\yjs\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe\" \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\tools\\run_maintenance_with_review.py\" --python \"C:\\Users\\yjs\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe\" --project-root \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\" --log-root \"C:\\Users\\yjs\\Desktop\\JAN\\LOG\" --out-doc \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\\JAN_maintenance_report_ui.docx\" --out-json \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\\JAN_maintenance_report_ui.json\" --review-history-dir \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\" --review-out-dir \"C:\\Users\\yjs\\Desktop\\JAN\\OrobrosTest\\out\\ouroboros_review_ui\"");
+    m_commandEdit.SetWindowText(DefaultMaintenanceCommand());
+    m_currentAgentName = DefaultAgentName();
     m_contextEdit.SetWindowText(L"우선점검: 시스템제어기조립체; 해결: (해결 시 조치항목 입력)");
     SetDlgItemTextW(IDC_BUTTON_LOAD_LOG, L"로그 읽기");
     m_sendButton.EnableWindow(FALSE);
     m_stopButton.EnableWindow(FALSE);
+    InitializeAgentProgressList();
+    SetAgentStatus(L"대기 중", L"명령을 입력하고 Start를 누르세요.");
     AppendText(L"[Ready] Start를 누르면 전체 시험 로그를 읽어 이상탐지/원인분류/장기위험 예측 후 정비 Word 보고서를 생성합니다.\r\n");
     return TRUE;
 }
@@ -152,6 +169,84 @@ void COrobrosTestDlg::AppendText(const CString& text)
     m_transcriptEdit.ReplaceSel(text);
 }
 
+void COrobrosTestDlg::InitializeAgentProgressList()
+{
+    m_agentProgressList.SetExtendedStyle(LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    m_agentProgressList.InsertColumn(0, L"No", LVCFMT_LEFT, 38);
+    m_agentProgressList.InsertColumn(1, L"Agent", LVCFMT_LEFT, 190);
+    m_agentProgressList.InsertColumn(2, L"State", LVCFMT_LEFT, 95);
+    m_agentProgressList.InsertColumn(3, L"Detail", LVCFMT_LEFT, 397);
+}
+
+void COrobrosTestDlg::AddAgentProgress(const CString& state, const CString& detail)
+{
+    if (!::IsWindow(m_agentProgressList.GetSafeHwnd())) {
+        return;
+    }
+
+    CString seq;
+    seq.Format(L"%d", ++m_agentProgressSeq);
+    int row = m_agentProgressList.InsertItem(m_agentProgressList.GetItemCount(), seq);
+    m_agentProgressList.SetItemText(row, 1, m_currentAgentName.IsEmpty() ? DefaultAgentName() : m_currentAgentName);
+    m_agentProgressList.SetItemText(row, 2, state);
+    m_agentProgressList.SetItemText(row, 3, detail);
+    m_agentProgressList.EnsureVisible(row, FALSE);
+}
+
+void COrobrosTestDlg::UpdateCurrentAgentFromOutput(const CString& chunk)
+{
+    int agentMarker = chunk.Find(L"[AGENT]");
+    if (agentMarker >= 0) {
+        int nameStart = agentMarker + static_cast<int>(wcslen(L"[AGENT]"));
+        int nameEnd = chunk.Find(L"|", nameStart);
+        if (nameEnd < 0) {
+            nameEnd = chunk.Find(L"\n", nameStart);
+        }
+        CString parsed = (nameEnd >= 0) ? chunk.Mid(nameStart, nameEnd - nameStart) : chunk.Mid(nameStart);
+        parsed.Trim();
+        if (!parsed.IsEmpty()) {
+            m_currentAgentName = parsed;
+            return;
+        }
+    }
+
+    if (chunk.Find(L"[INTERVIEW_Q") >= 0) {
+        m_currentAgentName = L"Context & Field Interview Agent";
+    }
+    else if (chunk.Find(L"[FINAL_CONFIRM_Q]") >= 0 || chunk.Find(L"[FINAL_CONFIRM_A]") >= 0) {
+        m_currentAgentName = L"Trust Gate Agent";
+    }
+    else if (chunk.Find(L"[FINAL_CONFIRM]") >= 0 || chunk.Find(L"[DONE]") >= 0) {
+        m_currentAgentName = L"Feedback Learning Agent";
+    }
+    else if (chunk.Find(L"[REVIEW]") >= 0) {
+        m_currentAgentName = L"Trust Gate Agent";
+    }
+    else if (chunk.Find(L"ouroboros_review_loop.py") >= 0) {
+        m_currentAgentName = L"Procedure & Priority Agent";
+    }
+    else if (chunk.Find(L"generate_maintenance_report.py") >= 0 || chunk.Find(L"[RUN]") >= 0) {
+        m_currentAgentName = L"Diagnostic Reasoning Agent";
+    }
+}
+
+void COrobrosTestDlg::SetAgentStatus(const CString& state, const CString& detail)
+{
+    CString text;
+    if (detail.IsEmpty()) {
+        text = state;
+    }
+    else {
+        text.Format(L"%s - %s", state.GetString(), detail.GetString());
+    }
+    m_agentStatusText.SetWindowText(text);
+    if (text != m_lastAgentStatusText) {
+        m_lastAgentStatusText = text;
+        AppendText(L"[AGENT STATUS] " + text + L"\r\n");
+        AddAgentProgress(state, detail);
+    }
+}
+
 CString COrobrosTestDlg::Utf8ToWide(const char* data, int len)
 {
     if (len <= 0) return L"";
@@ -191,6 +286,7 @@ bool COrobrosTestDlg::StartProcess(const CString& commandLine)
 
     if (!CreatePipe(&m_childStdOutRd, &m_childStdOutWr, &sa, 0)) {
         DWORD err = GetLastError();
+        SetAgentStatus(L"오류", L"stdout pipe 생성 실패");
         AppendText(L"[ERROR] stdout pipe 생성 실패: " + FormatWin32Error(err) + L"\r\n");
         CloseProcessHandles();
         SetLastError(err);
@@ -198,6 +294,7 @@ bool COrobrosTestDlg::StartProcess(const CString& commandLine)
     }
     if (!SetHandleInformation(m_childStdOutRd, HANDLE_FLAG_INHERIT, 0)) {
         DWORD err = GetLastError();
+        SetAgentStatus(L"오류", L"stdout pipe inherit 설정 실패");
         AppendText(L"[ERROR] stdout pipe inherit 설정 실패: " + FormatWin32Error(err) + L"\r\n");
         CloseProcessHandles();
         SetLastError(err);
@@ -205,6 +302,7 @@ bool COrobrosTestDlg::StartProcess(const CString& commandLine)
     }
     if (!CreatePipe(&m_childStdInRd, &m_childStdInWr, &sa, 0)) {
         DWORD err = GetLastError();
+        SetAgentStatus(L"오류", L"stdin pipe 생성 실패");
         AppendText(L"[ERROR] stdin pipe 생성 실패: " + FormatWin32Error(err) + L"\r\n");
         CloseProcessHandles();
         SetLastError(err);
@@ -212,6 +310,7 @@ bool COrobrosTestDlg::StartProcess(const CString& commandLine)
     }
     if (!SetHandleInformation(m_childStdInWr, HANDLE_FLAG_INHERIT, 0)) {
         DWORD err = GetLastError();
+        SetAgentStatus(L"오류", L"stdin pipe inherit 설정 실패");
         AppendText(L"[ERROR] stdin pipe inherit 설정 실패: " + FormatWin32Error(err) + L"\r\n");
         CloseProcessHandles();
         SetLastError(err);
@@ -244,12 +343,14 @@ bool COrobrosTestDlg::StartProcess(const CString& commandLine)
 
     if (!ok) {
         DWORD err = GetLastError();
+        SetAgentStatus(L"오류", L"프로세스 실행 실패");
         CloseProcessHandles();
         SetLastError(err);
         return false;
     }
 
     m_running = true;
+    SetAgentStatus(L"실행 중", L"agent가 요청을 처리하고 있습니다.");
     m_readerThread = std::thread(&COrobrosTestDlg::ReaderLoop, this);
     return true;
 }
@@ -326,24 +427,27 @@ void COrobrosTestDlg::MaybeShowQuestionDialog(const CString& chunk)
     trimmed.Trim();
     if (trimmed.IsEmpty()) return;
 
-    // 한 번의 chunk에 Q1~Q4가 같이 들어올 수 있으므로 [INTERVIEW_Qn]을 모두 순회 처리한다.
+    // 한 번의 chunk에 여러 [INTERVIEW_Qn]이 같이 들어올 수 있으므로 모든 번호를 순회 처리한다.
     int scanPos = 0;
-    while (m_interviewQuestionCount < 4) {
+    while (true) {
         int marker = trimmed.Find(L"[INTERVIEW_Q", scanPos);
         if (marker < 0) break;
 
         int qNumPos = marker + static_cast<int>(wcslen(L"[INTERVIEW_Q"));
         if (qNumPos >= trimmed.GetLength()) break;
 
-        wchar_t ch = trimmed.GetAt(qNumPos);
-        if (ch < L'1' || ch > L'4') {
-            scanPos = qNumPos + 1;
+        int closeBracket = trimmed.Find(L"]", qNumPos);
+        if (closeBracket < 0) break;
+
+        CString qNumText = trimmed.Mid(qNumPos, closeBracket - qNumPos);
+        qNumText.Trim();
+        int qNum = _wtoi(qNumText);
+        if (qNum <= 0) {
+            scanPos = closeBracket + 1;
             continue;
         }
-
-        int qNum = static_cast<int>(ch - L'0');
         if (qNum <= m_interviewQuestionCount) {
-            scanPos = qNumPos + 1;
+            scanPos = closeBracket + 1;
             continue;
         }
 
@@ -355,8 +459,9 @@ void COrobrosTestDlg::MaybeShowQuestionDialog(const CString& chunk)
 
         CString prompt = oneQuestion;
         CString qGuide;
-        qGuide.Format(L"\r\n\r\n[질문 %d/4] 예=\"예\", 아니요=\"아니요\"를 전송합니다.", m_interviewQuestionCount);
+        qGuide.Format(L"\r\n\r\n[질문 %d] 예=\"예\", 아니요=\"아니요\"를 전송합니다.", m_interviewQuestionCount);
         prompt += qGuide;
+        SetAgentStatus(L"입력 대기", L"인터뷰 질문에 예/아니요로 답변하세요.");
 
         int selected = MessageBox(prompt, L"Ouroboros 인터뷰 질문", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1);
         CString answer = (selected == IDYES) ? L"예" : L"아니요";
@@ -368,6 +473,7 @@ void COrobrosTestDlg::MaybeShowQuestionDialog(const CString& chunk)
             AppendText(L"[INFO] child 종료 상태라 자동전송은 생략합니다.\r\n");
         }
         else {
+            SetAgentStatus(L"답변 전송 중", L"선택한 인터뷰 답변을 child process로 전송합니다.");
             DWORD writeErr = ERROR_SUCCESS;
             if (!WriteAnswer(answer, &writeErr)) {
                 if (writeErr == ERROR_BROKEN_PIPE || writeErr == ERROR_INVALID_HANDLE) {
@@ -397,6 +503,7 @@ void COrobrosTestDlg::MaybeShowQuestionDialog(const CString& chunk)
                   L"예: approved(확정 저장)\r\n"
                   L"아니요: rejected(반려, 확정 이력 미저장)\r\n"
                   L"취소: pending(보류, 감사 로그만 저장)";
+        SetAgentStatus(L"최종확정 대기", L"최종 진단 확정 여부를 선택하세요.");
 
         int selected = MessageBox(prompt, L"최종 진단 확정", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON1);
         CString answer;
@@ -411,6 +518,7 @@ void COrobrosTestDlg::MaybeShowQuestionDialog(const CString& chunk)
         }
 
         AppendText(L"\r\n[DIALOG FINAL_CONFIRM] " + answer + L"\r\n");
+        SetAgentStatus(L"답변 전송 중", L"최종확정 응답을 child process로 전송합니다.");
         DWORD writeErr = ERROR_SUCCESS;
         if (!WriteAnswer(answer, &writeErr)) {
             if (writeErr == ERROR_BROKEN_PIPE || writeErr == ERROR_INVALID_HANDLE) {
@@ -484,6 +592,19 @@ LRESULT COrobrosTestDlg::OnPipeOutput(WPARAM, LPARAM lParam)
     std::unique_ptr<CString> text(reinterpret_cast<CString*>(lParam));
     AppendText(*text);
     m_capturedOutput += *text;
+    UpdateCurrentAgentFromOutput(*text);
+    if (text->Find(L"[INTERVIEW_Q") >= 0) {
+        SetAgentStatus(L"입력 대기", L"인터뷰 질문을 표시하는 중입니다.");
+    }
+    else if (text->Find(L"[FINAL_CONFIRM_Q]") >= 0) {
+        SetAgentStatus(L"최종확정 대기", L"최종 진단 확정 질문을 표시하는 중입니다.");
+    }
+    else if (text->Find(L"[RUN]") >= 0) {
+        SetAgentStatus(L"확인 중", L"필요한 파일과 로그를 확인하고 있습니다.");
+    }
+    else if (m_running) {
+        SetAgentStatus(L"실행 중", L"agent가 요청을 처리하고 있습니다.");
+    }
     MaybeShowQuestionDialog(*text);
     return 0;
 }
@@ -517,9 +638,18 @@ LRESULT COrobrosTestDlg::OnProcessExited(WPARAM, LPARAM)
     CString msg;
     if (haveExitCode) {
         msg.Format(L"\r\n[Process exited or pipe closed] exit code=%lu\r\n", exitCode);
+        if (exitCode == 0) {
+            SetAgentStatus(L"완료", L"agent 작업이 정상 종료되었습니다.");
+        }
+        else {
+            CString detail;
+            detail.Format(L"agent 작업이 오류 종료되었습니다. exit code=%lu", exitCode);
+            SetAgentStatus(L"오류", detail);
+        }
     }
     else {
         msg = L"\r\n[Process exited or pipe closed]\r\n";
+        SetAgentStatus(L"완료", L"pipe가 닫혀 agent 작업이 종료되었습니다.");
     }
     AppendText(msg);
 
@@ -543,14 +673,20 @@ void COrobrosTestDlg::OnBnClickedStart()
     if (m_running) return;
     CString cmd = BuildCommandLine();
     m_capturedOutput.Empty();
+    m_currentAgentName = DefaultAgentName();
+    m_agentProgressList.DeleteAllItems();
+    m_agentProgressSeq = 0;
+    m_lastAgentStatusText.Empty();
     m_interviewQuestionCount = 0;
     m_finalInputPromptShown = false;
     AppendText(L"\r\n[START] ");
     AppendText(cmd + L"\r\n");
+    SetAgentStatus(L"시작 중", L"6-agent diagnostic workflow child process를 생성하고 있습니다.");
     if (!StartProcess(cmd)) {
         DWORD err = GetLastError();
         CString msg;
         msg.Format(L"프로세스 실행 실패. %s\r\n", FormatWin32Error(err).GetString());
+        SetAgentStatus(L"오류", L"프로세스 실행 실패");
         AppendText(msg);
         MessageBox(msg, L"실행 실패", MB_ICONERROR);
         return;
@@ -566,10 +702,15 @@ void COrobrosTestDlg::OnBnClickedSend()
     m_answerEdit.GetWindowText(answer);
     answer.Trim();
     if (answer.IsEmpty()) return;
+    SetAgentStatus(L"답변 전송 중", L"입력한 답변을 child process로 전송합니다.");
     AppendText(L"\r\n[USER] " + answer + L"\r\n");
     DWORD writeErr = ERROR_SUCCESS;
     if (!WriteAnswer(answer, &writeErr)) {
+        SetAgentStatus(L"오류", L"stdin pipe로 답변 전송 실패");
         MessageBox(L"stdin pipe로 답변 전송 실패\r\n" + FormatWin32Error(writeErr), L"전송 실패", MB_ICONERROR);
+    }
+    else {
+        SetAgentStatus(L"실행 중", L"답변 전송 후 agent 처리를 기다리고 있습니다.");
     }
     m_answerEdit.SetWindowText(L"");
 }
@@ -596,9 +737,15 @@ void COrobrosTestDlg::OnBnClickedLoadLog()
     }
 
     m_selectedLogPath = dlg.GetPathName();
+    SetAgentStatus(L"로그 선택됨", L"선택한 로그를 command에 반영하고 있습니다.");
 
     CString command;
     m_commandEdit.GetWindowText(command);
+    command.Trim();
+    if (command.Find(L"run_maintenance_with_review.py") < 0) {
+        command = DefaultMaintenanceCommand();
+        AppendText(L"[WARN] command가 정비보고서 기본 실행기가 아니어서 기본 command로 복구했습니다.\r\n");
+    }
     command = UpdateFocusLogArg(command, m_selectedLogPath);
     m_commandEdit.SetWindowText(command);
 
@@ -618,6 +765,7 @@ void COrobrosTestDlg::OnBnClickedLoadLog()
 
 void COrobrosTestDlg::StopProcess()
 {
+    SetAgentStatus(L"중지 중", L"실행 중인 agent process를 종료하고 있습니다.");
     if (m_pi.hProcess) TerminateProcess(m_pi.hProcess, 1);
     m_running = false;
     if (m_childStdOutRd) { CloseHandle(m_childStdOutRd); m_childStdOutRd = nullptr; }
